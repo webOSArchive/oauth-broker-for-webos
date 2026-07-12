@@ -99,14 +99,19 @@ devices at `https://oauth.wosa.link/get-code.php?app=box` etc.
 
 ## Adding an app
 
-1. `mkdir apps/myapp`
-2. copy `apps/_example/config.php` to `apps/myapp/config.php`
-3. fill in the flow + credentials (see the template's inline docs)
-4. **OAuth2 only:** register `https://oauth.wosa.link/callback.php` as the redirect URI in the
-   provider's developer console
+Your app runs against the canonical broker at `oauth.wosa.link`. Onboard by opening a **pull request** against this repo that adds `apps/<yourslug>/config.example.php` (copy `apps/_example/config.php`). Put the **non-secret**
+parts in the PR:
 
-That's the entire server side. `apps/box/config.example.php` and
-`apps/instapaper/config.example.php` are worked examples of each flow.
+- the **flow** (`oauth2_authcode` or `oauth1_xauth`), a display **title**, and your slug;
+- **OAuth2:** public `client_id`, `authorize_url`, `token_url`, `scope`, any `authorize_extra`;
+- **OAuth1 xAuth:** `consumer_key`, `access_token_url`.
+
+**Leave secrets out of the PR.** The `client_secret`/`consumer_secret` go only into the
+git-ignored `apps/<slug>/config.php` on the server — the maintainer will arrange to receive yours
+privately while reviewing (email me at curator [at] webosarchive.org) and (for OAuth2) 
+register `https://oauth.wosa.link/callback.php` as the
+redirect URI. `apps/box/config.example.php` and `apps/instapaper/config.example.php` are worked
+examples of each flow to copy from.
 
 ## Security notes
 
@@ -122,3 +127,13 @@ That's the entire server side. `apps/box/config.example.php` and
 Any webOS app wires up in ~3 calls: `get-code` → show the code → poll `check-code` → store
 tokens (and `refresh` later). See the top-level `../README.md` (or `../PATTERN.md`) for the
 copy-pasteable Enyo recipe, and `boxapp` / `instapaper` for real implementations.
+
+For a **reusable, drop-in device integration** — a `Helpers.OAuthBroker` Enyo component plus a
+worked example view and a `CLAUDE.md` written to walk an AI to a working sign-in — see the
+`OAuthExample/` folder in **webos-common**:
+https://github.com/webOSArchive/webos-common
+
+For the **platform background** an AI (or a new contributor) needs — why the device can't do
+OAuth itself, and the show-a-code/poll-for-tokens workaround — see the `oauth` topic in the
+**webos-mcp** knowledge base (`webos://knowledge/oauth`):
+https://github.com/webOSArchive/webos-mcp
