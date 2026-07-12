@@ -1,0 +1,24 @@
+# Pretty per-app URLs for the OAuth broker (Apache).
+# Maps  /<app>/<endpoint>  ->  /<endpoint>.php?app=<app>
+# so devices can use a clean base URL of https://oauth.wosa.link/<app>.
+#
+# The ?app= query form works WITHOUT any of this, so if your host doesn't
+# allow .htaccess you can ignore rewrites entirely and point devices at
+# https://oauth.wosa.link/get-code.php?app=<app> etc. See README.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # /<app>/get-code   /<app>/check-code   /<app>/refresh   /<app>/start
+    RewriteRule ^([a-zA-Z0-9_-]+)/(get-code|check-code|refresh|start)/?$ $2.php?app=$1 [QSA,L]
+
+    # /<app>  and  /<app>/  -> the activate page
+    RewriteRule ^([a-zA-Z0-9_-]+)/?$ activate.php?app=$1 [QSA,L]
+</IfModule>
+
+# Never serve the per-app configs, libs, or the cache if it lives under docroot.
+<FilesMatch "\.(php)$">
+    # (PHP files are executed, not served; this block is a safety net for
+    #  misconfigured hosts that might serve .php as text.)
+</FilesMatch>
+RedirectMatch 404 /apps/.*/config\.php$

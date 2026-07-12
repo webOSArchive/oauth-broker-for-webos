@@ -1,0 +1,10 @@
+# Real secrets — never commit
+config.php
+apps/*/config.php
+
+# But DO keep the example/templates
+!config-example.php
+!apps/_example/config.php
+
+# Local cache (should live outside docroot anyway)
+cache/
