@@ -12,29 +12,32 @@
  * to actually delete here; this endpoint exists purely to satisfy eBay's
  * compliance check and log notifications for the record.
  *
- * Not wired into index.php/routing — deploy standalone if the maintainer is
- * willing to host it, or run it on any other PHP host, since it doesn't
- * depend on anything else in this repo.
+ * Not wired into index.php/routing, and — unlike apps/ebay/config.php — this
+ * file holds no secret itself, so it's safe to commit and deploy as-is; no
+ * copy-to-a-gitignored-file step needed here. It reads the one thing that IS
+ * a shared secret, `deletion_verification_token`, out of apps/ebay/config.php
+ * at request time, same as client_id/client_secret already are.
  *
  * Setup:
- *   1. Copy this file to apps/ebay/deletion-notification.php (git-ignored,
- *      same pattern as apps/ebay/config.php) and fill in VERIFICATION_TOKEN
- *      and ENDPOINT_URL below.
+ *   1. Add `deletion_verification_token` to apps/ebay/config.php (git-ignored;
+ *      see config.example.php for the field).
  *   2. In the eBay dev portal (Alerts & Notifications tab for the keyset),
  *      set:
  *        - Marketplace account deletion notification endpoint: ENDPOINT_URL
- *        - Verification token: the same string as VERIFICATION_TOKEN
+ *          (below) — keep it in sync if this file ever moves.
+ *        - Verification token: the same string as
+ *          apps/ebay/config.php's deletion_verification_token.
  *   3. Click "Send Test Notification" — eBay GETs this URL with a
  *      challenge_code param; a correct response is what clears the
  *      "Non Compliant" warning.
  *
- * Spec: https://developer.ebay.com/marketplace-account-deletion
+ * Spec: https://developer.ebay.com/develop/guides-v2/marketplace-user-account-deletion
  */
 
-const VERIFICATION_TOKEN = 'YOUR_VERIFICATION_TOKEN';
+$cfg = require __DIR__ . '/config.php';
 
-// Must exactly match the endpoint URL entered in the eBay dev portal — the
-// challenge hash below is computed over this literal string.
+// Not a secret — must exactly match the endpoint URL entered in the eBay dev
+// portal, since the challenge hash below is computed over this literal string.
 const ENDPOINT_URL = 'https://oauth.wosa.link/apps/ebay/deletion-notification.php';
 
 $challengeCode = isset($_GET['challenge_code']) ? $_GET['challenge_code'] : null;
@@ -42,7 +45,7 @@ $challengeCode = isset($_GET['challenge_code']) ? $_GET['challenge_code'] : null
 if ($challengeCode !== null) {
     // Verification handshake (GET) — eBay checks this on save and whenever
     // "Send Test Notification" is clicked.
-    $hash = hash('sha256', $challengeCode . VERIFICATION_TOKEN . ENDPOINT_URL);
+    $hash = hash('sha256', $challengeCode . $cfg['deletion_verification_token'] . ENDPOINT_URL);
     header('Content-Type: application/json');
     echo json_encode(array('challengeResponse' => $hash));
     exit;
