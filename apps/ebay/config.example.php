@@ -38,4 +38,11 @@ return array(
         // The RuName from step 2 above — NOT a literal URL.
         'redirect_uri' => 'YOUR_RUNAME',
     ),
+
+    // Shared secret for the Marketplace Account Deletion notification
+    // endpoint (apps/ebay/deletion-notification.php) — must match the
+    // "Verification token" field entered for this keyset in the eBay dev
+    // portal's Alerts & Notifications tab. Unrelated to OAuth; kept here
+    // rather than hardcoded in the endpoint script so it's never committed.
+    'deletion_verification_token' => 'YOUR_VERIFICATION_TOKEN',
 );
