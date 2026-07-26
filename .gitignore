@@ -1,3 +1,4 @@
+.DS_Store
 # Real secrets — never commit
 config.php
 apps/*/config.php
