@@ -82,13 +82,25 @@ class OAuth2 {
     }
 
     private function tokenRequest(array $params) {
+        $headers = array(
+            'Content-Type: application/x-www-form-urlencoded',
+            'Accept: application/json',
+        );
+        if (!empty($this->cfg['token_auth_basic'])) {
+            // Some providers (eBay) require client_id/client_secret via HTTP
+            // Basic auth at the token endpoint (client_secret_basic) instead
+            // of as body params (client_secret_post, the RFC 6749 default
+            // this class otherwise uses) - sending them in the body anyway
+            // gets a generic "invalid_client" rejection. Strip them from the
+            // body and send via Authorization header instead.
+            unset($params['client_id']);
+            unset($params['client_secret']);
+            $headers[] = 'Authorization: Basic ' . base64_encode($this->cfg['client_id'] . ':' . $this->cfg['client_secret']);
+        }
         $ch = curl_init($this->cfg['token_url']);
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($params));
-        curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-            'Content-Type: application/x-www-form-urlencoded',
-            'Accept: application/json',
-        ));
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 20);
         $response = curl_exec($ch);
