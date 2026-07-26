@@ -50,6 +50,15 @@ class OAuth2 {
      * @return array|false Decoded token response, or false on failure.
      */
     public function exchangeCode($code, $redirectUri) {
+        // Some providers (eBay) require redirect_uri to be an opaque identifier
+        // registered out-of-band (eBay's "RuName") rather than the literal
+        // callback URL. authorizeUrl() already honors this override via
+        // authorize_extra (array_merge lets it win); the token exchange step
+        // must send that same value back, or the provider rejects it as a
+        // redirect_uri mismatch even though the authorize step looked fine.
+        if (isset($this->cfg['authorize_extra']['redirect_uri'])) {
+            $redirectUri = $this->cfg['authorize_extra']['redirect_uri'];
+        }
         return $this->tokenRequest(array(
             'grant_type'    => 'authorization_code',
             'code'          => $code,
