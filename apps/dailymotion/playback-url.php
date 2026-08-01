@@ -5,34 +5,42 @@
  * The one part of video playback that has to go through the broker rather
  * than being called directly from the device (unlike Home/My Videos/
  * Favorites/Subscriptions, which all call Dailymotion's legacy API
- * directly - see DMBroker-lib.js). Dailymotion API v2 - the only place
- * that returns an actual playable progressive file, via
- * POST /v2/videos/{id}/downloads - sends no CORS headers on ANY response,
- * confirmed directly including the OPTIONS preflight (a bare 401, no
- * access-control-allow-origin at all), so the device's WebView JS
- * literally cannot call it, regardless of what token it holds.
+ * directly - see DMBroker-lib.js).
  *
- * Why this endpoint even exists: webOS 3.0.5's WebKit (~2011) can't run
- * Dailymotion's current embed player at all (modern webpack/ES6+ bundle -
- * confirmed by pulling the actual page and inspecting it), so this app
- * builds its own minimal native <video> page (player.html) instead and
- * needs a plain, direct, low-resolution H.264 MP4 URL to point it at - not
- * an HLS/DASH adaptive manifest (this device's GStreamer 0.10 stack has no
- * HLS/DASH demuxer plugin either, confirmed by listing /usr/lib).
+ * History/why this shape: earlier versions of this file tried Dailymotion
+ * API v2's POST /videos/{id}/downloads. That turned out to be scoped to
+ * videos the authenticated Studio account actually owns - confirmed
+ * directly, even a bare GET /v2/videos/{id} for an arbitrary public video
+ * 403s with UPSTREAM_ACCESS_DENIED regardless of a valid client_credentials
+ * token. It's a content-management API for your own catalog, not a general
+ * "fetch any video" API - useless for Home/Search/other users' content.
  *
- * Self-contained (no shared _lib.php/OAuth2.php - this is the only script
- * that needs v2 auth at all): mints a v2 client_credentials token
- * server-side (the client_secret from config.php never leaves the
- * broker - the same client_id/client_secret already used for the legacy
- * login), fetches every available download rendition, and returns just
- * the lowest-resolution video one.
+ * What actually works, matching how anonymous playback on dailymotion.com
+ * itself works (no login, no API key): the player's own internal metadata
+ * endpoint, https://www.dailymotion.com/player/metadata/video/{id} - the
+ * same thing Dailymotion's own JS player (and tools like yt-dlp) call to
+ * get a stream URL. No auth needed at all. Only delivery format is HLS
+ * (.m3u8) - Dailymotion has no progressive/direct-file option anymore for
+ * ANY access method, confirmed across the legacy API, v2, and this. Fetched
+ * server-side because this endpoint sends no CORS headers, and because it's
+ * Cloudflare-fronted with bot detection that flagged a scraping-environment
+ * IP during development - the broker's own server IP, already trusted for
+ * the legacy API calls, has a much better chance of not being blocked than
+ * an arbitrary device or sandbox would.
  *
- * Response: {"url": "https://...mp4?...", "label": "240p"}
+ * webOS 3.0.5's WebKit can't run Dailymotion's own embed player (confirmed:
+ * modern webpack/ES6+ bundle), so this app points its own minimal native
+ * <video> page (player.html) straight at the manifest URL instead. Whether
+ * this device's GStreamer 0.10 stack (which does have libgstfragmented.so,
+ * i.e. hlsdemux - confirmed on the actual device, correcting an earlier,
+ * wrong "no HLS support" conclusion from an incomplete plugin-directory
+ * search) can actually play it natively is the remaining open question this
+ * whole endpoint exists to let us test for real.
+ *
+ * Response: {"url": "https://...m3u8?...", "title": "..."}
  */
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
-
-$cfg = require __DIR__ . '/config.php';
 
 $videoId = isset($_GET['video_id']) ? $_GET['video_id'] : '';
 if ($videoId === '') {
@@ -41,129 +49,38 @@ if ($videoId === '') {
     exit;
 }
 
-$token = dm_v2_get_cached_token($cfg);
-if (!$token) {
+$ch = curl_init('https://www.dailymotion.com/player/metadata/video/' . rawurlencode($videoId));
+curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+    'Accept: application/json',
+    // Presenting as a real browser - this endpoint is Cloudflare-fronted
+    // with bot detection that rejected a bare curl/no-UA request during
+    // development.
+    'User-Agent: Mozilla/5.0 (Linux; wOSBrowser) AppleWebKit/534.6 (KHTML, like Gecko) Version/1.0 Safari/534.6',
+    'Referer: https://www.dailymotion.com/',
+));
+curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+$response = curl_exec($ch);
+$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+curl_close($ch);
+
+if ($response === false || $httpCode < 200 || $httpCode >= 300) {
+    error_log("playback-url.php: metadata fetch HTTP $httpCode for $videoId: " . substr((string) $response, 0, 500));
     http_response_code(502);
-    echo json_encode(array('error' => 'token_unavailable'));
+    echo json_encode(array('error' => 'metadata_unavailable'));
     exit;
 }
 
-$result = dm_v2_post('https://api.dailymotion.com/v2/videos/' . rawurlencode($videoId) . '/downloads', $token, array());
-if (!is_array($result) || empty($result['downloads']) || !is_array($result['downloads'])) {
+$meta = json_decode($response, true);
+$url = isset($meta['qualities']['auto'][0]['url']) ? $meta['qualities']['auto'][0]['url'] : '';
+if ($url === '') {
+    error_log("playback-url.php: no qualities.auto url for $videoId: " . substr((string) $response, 0, 500));
     http_response_code(502);
-    echo json_encode(array('error' => 'no_downloads_available'));
-    exit;
-}
-
-$best = dm_pick_lowest_quality($result['downloads']);
-if (!$best) {
-    http_response_code(502);
-    echo json_encode(array('error' => 'no_video_rendition'));
+    echo json_encode(array('error' => 'no_stream_available'));
     exit;
 }
 
 echo json_encode(array(
-    'url'   => $best['download_url'],
-    'label' => isset($best['label']) ? $best['label'] : '',
+    'url'   => $url,
+    'title' => isset($meta['title']) ? $meta['title'] : '',
 ));
-
-/**
- * v2 client_credentials token, cached to a file in the system temp dir
- * (keyed by client_id) for its expires_in window so concurrent/repeated
- * playback requests don't each mint a fresh token.
- */
-function dm_v2_get_cached_token(array $cfg) {
-    $cacheFile = sys_get_temp_dir() . '/dm_v2_token_' . md5($cfg['client_id']) . '.json';
-
-    $cached = @file_get_contents($cacheFile);
-    if ($cached !== false) {
-        $data = json_decode($cached, true);
-        if (is_array($data) && !empty($data['access_token']) && !empty($data['expires_at']) && $data['expires_at'] > time() + 60) {
-            return $data['access_token'];
-        }
-    }
-
-    $ch = curl_init('https://oauth2.dailymotion.com/v2/token');
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query(array(
-        'grant_type'    => 'client_credentials',
-        'client_id'     => $cfg['client_id'],
-        'client_secret' => $cfg['client_secret'],
-        'scope'         => 'video.read',
-    )));
-    curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/x-www-form-urlencoded'));
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($response === false || $httpCode < 200 || $httpCode >= 300) {
-        error_log("dm_v2_get_cached_token: HTTP $httpCode: " . substr((string) $response, 0, 500));
-        return false;
-    }
-    $json = json_decode($response, true);
-    if (!is_array($json) || empty($json['access_token'])) {
-        error_log('dm_v2_get_cached_token: bad response: ' . substr((string) $response, 0, 500));
-        return false;
-    }
-
-    $expiresIn = isset($json['expires_in']) ? (int) $json['expires_in'] : 1800;
-    @file_put_contents($cacheFile, json_encode(array(
-        'access_token' => $json['access_token'],
-        'expires_at'   => time() + $expiresIn,
-    )));
-    return $json['access_token'];
-}
-
-function dm_v2_post($url, $token, array $body) {
-    $ch = curl_init($url);
-    curl_setopt($ch, CURLOPT_POST, true);
-    curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
-    curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-        'Authorization: Bearer ' . $token,
-        'Content-Type: application/json',
-        'Accept: application/json',
-    ));
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    curl_setopt($ch, CURLOPT_TIMEOUT, 20);
-    $response = curl_exec($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($response === false || $httpCode < 200 || $httpCode >= 300) {
-        error_log("dm_v2_post: HTTP $httpCode from $url: " . substr((string) $response, 0, 500));
-        return false;
-    }
-    return json_decode($response, true);
-}
-
-/**
- * Picks the smallest-resolution *video* rendition (ignores any non-video
- * entries) - "lowest that still plays" for a 2011-era mobile SoC, per the
- * explicit product decision to only pull what the TouchPad can decode.
- * Dailymotion's response doesn't include a numeric resolution field
- * directly (unconfirmed against a live response while writing this - no
- * v2 credentials were available), so this sorts by the leading number in
- * the "label" field (e.g. "240p" -> 240), falling back to treating an
- * unparseable label as the least-preferred (highest) option.
- */
-function dm_pick_lowest_quality(array $downloads) {
-    $videoOnly = array_values(array_filter($downloads, function ($d) {
-        return !isset($d['type']) || $d['type'] === 'video';
-    }));
-    if (empty($videoOnly)) {
-        return false;
-    }
-    usort($videoOnly, function ($a, $b) {
-        return dm_label_to_number(isset($a['label']) ? $a['label'] : '') - dm_label_to_number(isset($b['label']) ? $b['label'] : '');
-    });
-    return $videoOnly[0];
-}
-
-function dm_label_to_number($label) {
-    if (preg_match('/(\d+)/', $label, $m)) {
-        return (int) $m[1];
-    }
-    return 999999;
-}
