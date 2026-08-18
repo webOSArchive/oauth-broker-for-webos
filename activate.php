@@ -6,6 +6,9 @@
  * come here and gave them a code. This renders the right form for the app's
  * flow:
  *   - oauth2_authcode : just the code, then "Continue to <provider>"
+ *   - oauth1_3legged  : same "Continue to <provider>" form — the code is all
+ *                       this page needs either way; the redirect target is
+ *                       just a different URL under the hood (see start.php)
  *   - oauth1_xauth    : code + provider username/password (entered on THIS
  *                       trusted browser, never on the device or the wire to it)
  *
@@ -40,7 +43,7 @@ if ($cfg['flow'] === 'oauth1_xauth') {
       . '</form>'
       . '<p><small>Your password is sent only to ' . htmlspecialchars($cfg['title'])
       . ' to obtain a token. The device never sees it.</small></p>';
-} else { // oauth2_authcode
+} else { // oauth2_authcode or oauth1_3legged - both just redirect to the provider
     $body =
         ($err ? '<p class="err">' . htmlspecialchars($err) . '</p>' : '')
       . '<p>Enter the code shown on your webOS device, then continue to '

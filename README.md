@@ -40,12 +40,20 @@ client secret.
   └────────────────┘        └──────────────────────────────────┘      └────────────┘
 ```
 
-Two flow types are supported per app:
+Three flow types are supported per app:
 
-| `flow`             | For                                   | User enters on the helper page      |
-|--------------------|---------------------------------------|-------------------------------------|
-| `oauth2_authcode`  | Modern OAuth 2.0 (Box, Google, …)     | just the code, then approves consent|
-| `oauth1_xauth`     | Legacy xAuth (Instapaper)             | the code + provider user/password   |
+| `flow`             | For                                    | User enters on the helper page       |
+|--------------------|-----------------------------------------|--------------------------------------|
+| `oauth2_authcode`  | Modern OAuth 2.0 (Box, Google, …)       | just the code, then approves consent |
+| `oauth1_3legged`   | OAuth 1.0a, no xAuth (Tumblr)           | just the code, then approves consent |
+| `oauth1_xauth`     | Legacy xAuth (Instapaper)               | the code + provider user/password    |
+
+`oauth1_3legged` and `oauth2_authcode` both end in a real redirect to the
+provider's own consent screen — the difference is entirely server-side (a
+request-token/verifier dance vs. RFC 6749), so `activate.php` renders the same
+"Continue to provider" form for both. Reach for it when an OAuth1 provider
+doesn't support xAuth — Tumblr, notably, rejects a direct credential exchange
+outright.
 
 ## Endpoints
 
@@ -55,7 +63,7 @@ All accept `?app=<name>` (and a pretty `/<app>/…` form if you enable the rewri
 |---------------------|--------------------|----------------------------------------------------|
 | `get-code.php`      | device             | mint a code, return `{code, useUrl, pollSeconds}`  |
 | `activate.php`      | user's browser     | the "enter your code" page (pretty URL: `/<app>`)  |
-| `start.php`         | user's browser     | form target → xAuth, or redirect to provider       |
+| `start.php`         | user's browser     | form target → xAuth, or request-token + redirect   |
 | `callback.php`      | provider → browser | exchange auth code, park tokens                    |
 | `check-code.php`    | device (polled)    | `{status:"pending"}` → `{status:"ready", …tokens}` |
 | `refresh.php`       | device             | refresh an OAuth2 access token, server-side        |
@@ -102,16 +110,22 @@ devices at `https://oauth.wosa.link/get-code.php?app=box` etc.
 Your app runs against the canonical broker at `oauth.wosa.link`. Onboard by opening a **pull request** against this repo that adds `apps/<yourslug>/config.example.php` (copy `apps/_example/config.php`). Put the **non-secret**
 parts in the PR:
 
-- the **flow** (`oauth2_authcode` or `oauth1_xauth`), a display **title**, and your slug;
+- the **flow** (`oauth2_authcode`, `oauth1_3legged`, or `oauth1_xauth`), a display **title**, and your slug;
 - **OAuth2:** public `client_id`, `authorize_url`, `token_url`, `scope`, any `authorize_extra`;
+- **OAuth1 3-legged:** `consumer_key`, `request_token_url`, `authorize_url`, `access_token_url`;
 - **OAuth1 xAuth:** `consumer_key`, `access_token_url`.
 
 **Leave secrets out of the PR.** The `client_secret`/`consumer_secret` go only into the
 git-ignored `apps/<slug>/config.php` on the server — the maintainer will arrange to receive yours
-privately while reviewing (email me at curator [at] webosarchive.org) and (for OAuth2) 
-register `https://oauth.wosa.link/callback.php` as the
-redirect URI. `apps/box/config.example.php` and `apps/instapaper/config.example.php` are worked
-examples of each flow to copy from.
+privately while reviewing (email me at curator [at] webosarchive.org) and (for OAuth2 **and**
+OAuth1 3-legged) register `https://oauth.wosa.link/callback.php` as the redirect/callback URL in
+the provider's own console. Confirmed against the live API while building the wumblr integration:
+Tumblr rejects a dynamically-supplied `oauth_callback` outright ("Disallowed oauth_callback
+specified") and only accepts whatever's registered — same restriction as any OAuth2 provider here,
+just enforced on the request-token call instead of at the authorize redirect. Don't assume an
+OAuth1 provider is more lenient about this than it looks; test against the real API before writing
+"no registration needed" into a config's comments. `apps/box/`, `apps/wumblr/`, and
+`apps/instapaper/` are worked examples of each flow to copy from.
 
 ## Security notes
 
