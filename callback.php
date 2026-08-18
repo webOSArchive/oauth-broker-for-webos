@@ -1,15 +1,86 @@
 <?php
 /**
- * callback.php  (OAuth2 provider → user's browser → here)
+ * callback.php  (provider → user's browser → here)
  *
- * The single redirect target registered with every OAuth2 provider. The app +
- * device code travel in the `state` parameter. We verify the CSRF nonce,
- * exchange the authorization code for tokens (server-side, using the client
- * secret), and park the tokens against the device code for pickup.
+ * The single redirect target registered with every OAuth2 provider, and also
+ * the fixed callback three-legged OAuth1 providers (Tumblr) send the user
+ * back to after they approve the request token. The two protocols hand back
+ * entirely different query strings, so this file branches on shape before
+ * doing anything else:
  *
- *   GET /callback.php?code=AUTH_CODE&state=BASE64URL
+ *   OAuth2          GET /callback.php?code=AUTH_CODE&state=BASE64URL
+ *                   app + device code travel in `state`, checked against a
+ *                   CSRF nonce stashed in the session by start.php.
+ *
+ *   OAuth1 3-legged GET /callback.php?oauth_token=&oauth_verifier=
+ *                   No app/code on this one at all - unlike OAuth2's state,
+ *                   OAuth1 has nowhere to put them: real providers commonly
+ *                   reject a dynamic oauth_callback (Tumblr does, with
+ *                   "Disallowed oauth_callback specified"), so the callback
+ *                   URL has to be the fixed, pre-registered one, no query
+ *                   string of ours attached. Everything needed - app, code,
+ *                   the request token, its secret - comes from the session
+ *                   start.php stashed it in instead.
  */
 require __DIR__ . '/common.php';
+
+if (isset($_GET['oauth_token']) && isset($_GET['oauth_verifier'])) {
+    // ---- three-legged OAuth1: exchange the verifier for an access token ----
+    //
+    // Nothing here reads $_GET['app'] or $_GET['code'] - unlike the OAuth2
+    // path below, this callback URL carries no query string of ours at all
+    // (see start.php: real providers commonly reject a dynamic
+    // oauth_callback, Tumblr included). app, code, and the request token +
+    // secret all come from the session start.php stashed them in.
+    $pending = isset($_SESSION['broker_oauth1_pending']) ? $_SESSION['broker_oauth1_pending'] : null;
+
+    if (!$pending || !hash_equals($pending['token'], $_GET['oauth_token'])) {
+        renderPage('Something went wrong',
+            '<p class="err">Security check failed. Please start again from your device.</p>', null);
+        exit;
+    }
+    unset($_SESSION['broker_oauth1_pending']);
+
+    $app = $pending['app'];
+    $code = $pending['code'];
+    $cfg = loadApp($app);
+
+    if ($cfg['flow'] !== 'oauth1_3legged') {
+        renderPage('Something went wrong', '<p class="err">Unexpected callback for this app.</p>', $cfg);
+        exit;
+    }
+
+    $cache = new Cache($GLOBALS['CACHE_PATH'], $GLOBALS['CACHE_TTL']);
+    if (!$cache->exists($app, $code)) {
+        renderPage($cfg['title'],
+            '<p class="err">Your activation code expired before sign-in finished. '
+          . 'Get a fresh code on your device and try again.</p>', $cfg);
+        exit;
+    }
+
+    $oauth  = new OAuth1($cfg['consumer_key'], $cfg['consumer_secret']);
+    $result = $oauth->accessToken($cfg['access_token_url'], $pending['token'], $pending['secret'], $_GET['oauth_verifier']);
+
+    if (!$result || empty($result['oauth_token']) || empty($result['oauth_token_secret'])) {
+        renderPage($cfg['title'],
+            '<p class="err">Could not complete sign-in with ' . htmlspecialchars($cfg['title'])
+          . '. Please try again.</p>', $cfg);
+        exit;
+    }
+
+    $cache->fulfill($app, $code, array(
+        'oauth_token'        => $result['oauth_token'],
+        'oauth_token_secret' => $result['oauth_token_secret'],
+    ));
+
+    renderPage($cfg['title'],
+        '<p class="ok">Access approved!</p>'
+      . '<p>Return to your webOS device — it will finish signing in automatically. '
+      . 'If it doesn\'t, press <b>Check now</b> in the app.</p>', $cfg);
+    exit;
+}
+
+// ---- everything below is the existing OAuth2 authorization-code path ----
 
 // Provider-side error (user declined, etc.)
 if (isset($_GET['error'])) {

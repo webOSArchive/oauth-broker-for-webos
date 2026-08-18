@@ -56,4 +56,29 @@ return array(
  *     'username_label'   => 'Instapaper email',   // optional
  * );
  * -------------------------------------------------------------------------
+ *
+ * FLOW C — "oauth1_3legged": standard OAuth 1.0a, request token + a real
+ *   consent screen + verifier. For OAuth1 providers that do NOT support
+ *   xAuth (e.g. Tumblr) and so cannot use Flow B — this is the fallback for
+ *   "OAuth1, but the provider insists on a browser redirect". No refresh;
+ *   OAuth1 access tokens don't expire.
+ *
+ *   Register https://oauth.wosa.link/callback.php as the callback URL in
+ *   the provider's own console, same as an OAuth2 app - don't assume OAuth1
+ *   providers accept a dynamically-supplied oauth_callback just because the
+ *   spec allows it. Tumblr, notably, does not (confirmed against the live
+ *   API): it rejects one with "Disallowed oauth_callback specified" and only
+ *   honors whatever's pre-registered. Return an array shaped like this:
+ *
+ * return array(
+ *     'flow'  => 'oauth1_3legged',
+ *     'title' => 'wumblr',
+ *     'accent' => '#35465c',
+ *     'consumer_key'      => 'YOUR_CONSUMER_KEY',
+ *     'consumer_secret'   => 'YOUR_CONSUMER_SECRET',
+ *     'request_token_url' => 'https://provider.example.com/oauth/request_token',
+ *     'authorize_url'     => 'https://provider.example.com/oauth/authorize',
+ *     'access_token_url'  => 'https://provider.example.com/oauth/access_token',
+ * );
+ * -------------------------------------------------------------------------
  */
