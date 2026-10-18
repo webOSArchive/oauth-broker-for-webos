@@ -40,13 +40,25 @@ client secret.
   └────────────────┘        └──────────────────────────────────┘      └────────────┘
 ```
 
-Three flow types are supported per app:
+Four flow types are supported per app:
 
 | `flow`             | For                                    | User enters on the helper page       |
 |--------------------|-----------------------------------------|--------------------------------------|
 | `oauth2_authcode`  | Modern OAuth 2.0 (Box, Google, …)       | just the code, then approves consent |
 | `oauth1_3legged`   | OAuth 1.0a, no xAuth (Tumblr)           | just the code, then approves consent |
 | `oauth1_xauth`     | Legacy xAuth (Instapaper)               | the code + provider user/password    |
+| `apple_musickit`   | Apple Music (Jukie)                     | the code, then signs in with Apple ID |
+
+`apple_musickit` isn't OAuth: Apple Music has no token endpoint, only MusicKit
+JS's `authorize()`, which must run in a real browser. `start.php` serves a page
+that loads MusicKit JS with the app's developer token (`developer_token` in
+`apps/<slug>/config.php`), the user signs in there, and the page posts the Music
+User Token to `musickit-callback.php`, which checks it against Apple and parks it
+like any other flow. The device receives it once from `check-code.php` as
+`access_token` (also `music_user_token` and `storefront`). There is no refresh:
+Music User Tokens last about six months, then the user signs in again. The
+developer token goes only to the sign-in browser, never to the device. See
+`apps/applemusic/config.example.php`.
 
 `oauth1_3legged` and `oauth2_authcode` both end in a real redirect to the
 provider's own consent screen — the difference is entirely server-side (a
@@ -65,6 +77,7 @@ All accept `?app=<name>` (and a pretty `/<app>/…` form if you enable the rewri
 | `activate.php`      | user's browser     | the "enter your code" page (pretty URL: `/<app>`)  |
 | `start.php`         | user's browser     | form target → xAuth, or request-token + redirect   |
 | `callback.php`      | provider → browser | exchange auth code, park tokens                    |
+| `musickit-callback.php` | sign-in page → broker | `apple_musickit`: verify + park the Music User Token |
 | `check-code.php`    | device (polled)    | `{status:"pending"}` → `{status:"ready", …tokens}` |
 | `refresh.php`       | device             | refresh an OAuth2 access token, server-side        |
 | `index.php`         | anyone             | landing page listing configured apps               |
@@ -110,7 +123,7 @@ devices at `https://oauth.wosa.link/get-code.php?app=box` etc.
 Your app runs against the canonical broker at `oauth.wosa.link`. Onboard by opening a **pull request** against this repo that adds `apps/<yourslug>/config.example.php` (copy `apps/_example/config.php`). Put the **non-secret**
 parts in the PR:
 
-- the **flow** (`oauth2_authcode`, `oauth1_3legged`, or `oauth1_xauth`), a display **title**, and your slug;
+- the **flow** (`oauth2_authcode`, `oauth1_3legged`, `oauth1_xauth`, or `apple_musickit`), a display **title**, and your slug;
 - **OAuth2:** public `client_id`, `authorize_url`, `token_url`, `scope`, any `authorize_extra`;
 - **OAuth1 3-legged:** `consumer_key`, `request_token_url`, `authorize_url`, `access_token_url`;
 - **OAuth1 xAuth:** `consumer_key`, `access_token_url`.

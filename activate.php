@@ -43,6 +43,14 @@ if ($cfg['flow'] === 'oauth1_xauth') {
       . '</form>'
       . '<p><small>Your password is sent only to ' . htmlspecialchars($cfg['title'])
       . ' to obtain a token. The device never sees it.</small></p>';
+} elseif ($cfg['flow'] === 'apple_musickit') {
+    $body =
+        ($err ? '<p class="err">' . htmlspecialchars($err) . '</p>' : '')
+      . '<p>Enter the code shown on your webOS device, then sign in with your Apple ID.</p>'
+      . '<form method="POST" action="start.php?app=' . urlencode($app) . '">'
+      . $codeField
+      . '<button type="submit">Continue</button>'
+      . '</form>';
 } else { // oauth2_authcode or oauth1_3legged - both just redirect to the provider
     $body =
         ($err ? '<p class="err">' . htmlspecialchars($err) . '</p>' : '')

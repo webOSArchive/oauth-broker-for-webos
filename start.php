@@ -15,6 +15,9 @@
  *                       back to callback.php - but unlike oauth2_authcode,
  *                       with no query string of ours on it at all; see the
  *                       oauth1_3legged block below for why.
+ *   - apple_musickit  : no redirect at all. Serves a page that runs MusicKit
+ *                       JS authorize() in the browser; that page posts the
+ *                       Music User Token to musickit-callback.php.
  */
 require __DIR__ . '/common.php';
 
@@ -97,6 +100,40 @@ if ($cfg['flow'] === 'oauth1_3legged') {
     header('Location: ' . $oauth->authorizeUrl($cfg['authorize_url'], $reqToken['oauth_token']));
     exit;
 }
+
+if ($cfg['flow'] === 'apple_musickit') {
+    // ---- Apple Music: there is no provider redirect. Serve a page that runs
+    // MusicKit JS's authorize() in this browser and posts the Music User Token
+    // to musickit-callback.php. The nonce ties that POST to this browser
+    // session, so only the page we just served can fulfil this code.
+    if (empty($cfg['developer_token'])) {
+        renderPage($cfg['title'],
+            '<p class="err">This app is missing its developer token on the broker.</p>', $cfg);
+        exit;
+    }
+
+    $nonce = bin2hex(random_bytes(16));
+    $_SESSION['broker_musickit'][$app . '_' . $code] = $nonce;
+
+    $boot = json_encode(array(
+        'developerToken' => $cfg['developer_token'],
+        'appName'        => isset($cfg['app_name'])  ? $cfg['app_name']  : $cfg['title'],
+        'appBuild'       => isset($cfg['app_build']) ? $cfg['app_build'] : '1.0',
+        'callback'       => $GLOBALS['BROKER_BASE_URL'] . '/musickit-callback.php?app=' . urlencode($app),
+        'code'           => $code,
+        'nonce'          => $nonce,
+    ), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+
+    header('Cache-Control: no-store');
+    renderPage($cfg['title'],
+        '<p id="intro">Sign in with your Apple ID to let your webOS device use Apple Music.</p>'
+      . '<button type="button" id="go" disabled>Loading Apple Music&hellip;</button>'
+      . '<p id="msg"></p>'
+      . '<script>' . musickitPageScript($boot) . '</script>'
+      . '<script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" async></script>', $cfg);
+    exit;
+}
+
 // ---- oauth2_authcode: redirect to the provider's consent screen ----
 $nonce = bin2hex(random_bytes(16));
 $_SESSION['broker_nonce'][$app . '_' . $code] = $nonce;
@@ -113,4 +150,60 @@ exit;
 
 function base64url_encode($s) {
     return rtrim(strtr(base64_encode($s), '+/', '-_'), '=');
+}
+
+/**
+ * The inline script for the apple_musickit sign-in page. It must be defined
+ * (listener attached) before musickit.js loads, which fires `musickitloaded`
+ * as soon as it's ready.
+ */
+function musickitPageScript($bootJson) {
+    return <<<JS
+var BOOT = $bootJson;
+var go = document.getElementById('go');
+var msg = document.getElementById('msg');
+function say(text, cls) { msg.className = cls || ''; msg.textContent = text; }
+document.addEventListener('musickitloaded', function () {
+    MusicKit.configure({
+        developerToken: BOOT.developerToken,
+        app: { name: BOOT.appName, build: BOOT.appBuild }
+    }).then(function () {
+        go.disabled = false;
+        go.textContent = 'Sign in with Apple Music';
+    }, function (e) {
+        say('Apple Music could not start: ' + (e && e.message ? e.message : e), 'err');
+        go.textContent = 'Unavailable';
+    });
+});
+go.onclick = function () {
+    var mk = MusicKit.getInstance();
+    go.disabled = true;
+    say('Waiting for Apple…');
+    mk.authorize().then(function (mut) {
+        say('Finishing up…');
+        var body = 'code=' + encodeURIComponent(BOOT.code)
+                 + '&nonce=' + encodeURIComponent(BOOT.nonce)
+                 + '&music_user_token=' + encodeURIComponent(mut)
+                 + '&storefront=' + encodeURIComponent(mk.storefrontId || '');
+        return fetch(BOOT.callback, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body
+        }).then(function (r) { return r.json(); });
+    }).then(function (res) {
+        if (res && res.ok) {
+            document.getElementById('intro').textContent = '';
+            go.style.display = 'none';
+            say('Signed in! Return to your webOS device - it will finish signing in automatically.', 'ok');
+        } else {
+            go.disabled = false;
+            say((res && res.error) || 'Sign-in failed. Please try again.', 'err');
+        }
+    }, function (e) {
+        go.disabled = false;
+        say('Sign-in was cancelled or failed. ' + (e && e.message ? e.message : ''), 'err');
+    });
+};
+JS;
 }
