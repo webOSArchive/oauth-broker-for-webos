@@ -36,6 +36,19 @@ return array(
     // need these to actually issue a refresh token, e.g. Google:
     //   'authorize_extra' => array('access_type' => 'offline', 'prompt' => 'consent'),
     'authorize_extra' => array(),
+
+    // Optional: say the scope again at the token endpoint, on the code
+    // exchange and on a refresh. Microsoft wants this.
+    //   'scope_on_token' => true,
+
+    // Optional: another app on this broker to sign the same person in with
+    // when the provider refuses this app's scope for their account
+    // (error invalid_scope, or an error_description holding one of
+    // fallback_on). The device's code is then answered with that app's tokens
+    // and "broker_app" naming it. See apps/microsoft365/config.example.php.
+    //   'fallback_app'   => 'otherapp',
+    //   'fallback_on'    => array('AADSTS70011'),
+    //   'fallback_extra' => array('domain_hint' => 'consumers'),
 );
 
 /*

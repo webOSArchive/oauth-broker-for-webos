@@ -26,9 +26,11 @@ class OAuth2 {
      *
      * @param string $redirectUri The broker callback (must match provider registration).
      * @param string $state       Opaque value returned to the callback.
+     * @param array  $extra       Further query params for this one request (a
+     *                            fallback sign-in's hints; see callback.php).
      * @return string
      */
-    public function authorizeUrl($redirectUri, $state) {
+    public function authorizeUrl($redirectUri, $state, array $extra = array()) {
         $params = array(
             'client_id'     => $this->cfg['client_id'],
             'redirect_uri'  => $redirectUri,
@@ -40,6 +42,9 @@ class OAuth2 {
         }
         if (!empty($this->cfg['authorize_extra']) && is_array($this->cfg['authorize_extra'])) {
             $params = array_merge($params, $this->cfg['authorize_extra']);
+        }
+        if ($extra) {
+            $params = array_merge($params, $extra);
         }
         $sep = (strpos($this->cfg['authorize_url'], '?') === false) ? '?' : '&';
         return $this->cfg['authorize_url'] . $sep . http_build_query($params);
@@ -59,13 +64,13 @@ class OAuth2 {
         if (isset($this->cfg['authorize_extra']['redirect_uri'])) {
             $redirectUri = $this->cfg['authorize_extra']['redirect_uri'];
         }
-        return $this->tokenRequest(array(
+        return $this->tokenRequest($this->withTokenScope(array(
             'grant_type'    => 'authorization_code',
             'code'          => $code,
             'client_id'     => $this->cfg['client_id'],
             'client_secret' => $this->cfg['client_secret'],
             'redirect_uri'  => $redirectUri,
-        ));
+        )));
     }
 
     /**
@@ -73,12 +78,25 @@ class OAuth2 {
      * @return array|false Decoded token response, or false on failure.
      */
     public function refresh($refreshToken) {
-        return $this->tokenRequest(array(
+        return $this->tokenRequest($this->withTokenScope(array(
             'grant_type'    => 'refresh_token',
             'refresh_token' => $refreshToken,
             'client_id'     => $this->cfg['client_id'],
             'client_secret' => $this->cfg['client_secret'],
-        ));
+        )));
+    }
+
+    /**
+     * Some providers (Microsoft) want the scope said again at the token
+     * endpoint, on the code exchange and on a refresh: without it the token
+     * may be for another resource than the one the app asked for. Off unless
+     * the app's config sets scope_on_token.
+     */
+    private function withTokenScope(array $params) {
+        if (!empty($this->cfg['scope_on_token']) && !empty($this->cfg['scope'])) {
+            $params['scope'] = $this->cfg['scope'];
+        }
+        return $params;
     }
 
     private function tokenRequest(array $params) {

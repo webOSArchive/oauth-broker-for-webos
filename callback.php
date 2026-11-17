@@ -82,20 +82,25 @@ if (isset($_GET['oauth_token']) && isset($_GET['oauth_verifier'])) {
 
 // ---- everything below is the existing OAuth2 authorization-code path ----
 
-// Provider-side error (user declined, etc.)
-if (isset($_GET['error'])) {
+$authCode = isset($_GET['code'])  ? $_GET['code']  : '';
+$stateRaw = isset($_GET['state']) ? $_GET['state'] : '';
+$state    = json_decode(base64url_decode($stateRaw), true);
+$provErr  = isset($_GET['error']) ? $_GET['error'] : '';
+$provDesc = isset($_GET['error_description']) ? $_GET['error_description'] : '';
+
+/** The page for a provider-side error (the user declined, etc.). */
+function providerErrorPage($err, $desc) {
     renderPage('Sign-in cancelled',
-        '<p class="err">' . htmlspecialchars($_GET['error']
-            . (isset($_GET['error_description']) ? ': ' . $_GET['error_description'] : '')) . '</p>'
+        '<p class="err">' . htmlspecialchars($err . ($desc !== '' ? ': ' . $desc : '')) . '</p>'
       . '<p>You can close this page and try again from your device.</p>', null);
     exit;
 }
 
-$authCode = isset($_GET['code'])  ? $_GET['code']  : '';
-$stateRaw = isset($_GET['state']) ? $_GET['state'] : '';
-$state    = json_decode(base64url_decode($stateRaw), true);
-
-if ($authCode === '' || !is_array($state) || empty($state['app']) || empty($state['code'])) {
+if (!is_array($state) || empty($state['app']) || empty($state['code'])
+    || !is_string($state['app']) || !is_string($state['code'])) {
+    if ($provErr !== '') {
+        providerErrorPage($provErr, $provDesc);
+    }
     renderPage('Something went wrong',
         '<p class="err">Missing or malformed authorization response.</p>', null);
     exit;
@@ -105,18 +110,49 @@ $app  = preg_replace('/[^a-z0-9_-]/i', '', $state['app']);
 $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', $state['code']));
 $cfg  = loadApp($app);
 
+// The app whose device code this sign-in answers. It is $app itself, except in
+// a fallback round (see fallBack() below), where the device asked for one app
+// and the account is being signed in with that app's fallback_app instead.
+$owner = $app;
+if (isset($state['for']) && is_string($state['for'])) {
+    $owner    = preg_replace('/[^a-z0-9_-]/i', '', $state['for']);
+    $ownerCfg = loadApp($owner);
+    if (empty($ownerCfg['fallback_app']) || $ownerCfg['fallback_app'] !== $app) {
+        renderPage('Something went wrong',
+            '<p class="err">Unexpected callback for this app.</p>', $cfg);
+        exit;
+    }
+}
+$nonceKey = $owner . '_' . $code;
+
 // CSRF: the nonce must match the one we stashed in this browser's session.
-$expected = isset($_SESSION['broker_nonce'][$app . '_' . $code])
-          ? $_SESSION['broker_nonce'][$app . '_' . $code] : null;
-if (!$expected || empty($state['nonce']) || !hash_equals($expected, $state['nonce'])) {
+$expected = isset($_SESSION['broker_nonce'][$nonceKey])
+          ? $_SESSION['broker_nonce'][$nonceKey] : null;
+if (!$expected || empty($state['nonce']) || !is_string($state['nonce'])
+    || !hash_equals($expected, $state['nonce'])) {
+    if ($provErr !== '') {
+        providerErrorPage($provErr, $provDesc);
+    }
     renderPage('Something went wrong',
         '<p class="err">Security check failed. Please start again from your device.</p>', $cfg);
     exit;
 }
-unset($_SESSION['broker_nonce'][$app . '_' . $code]);
+unset($_SESSION['broker_nonce'][$nonceKey]);
+
+// Provider-side error at the redirect (user declined, scope refused, etc.)
+if ($provErr !== '') {
+    fallBack($cfg, $owner, $code, $provErr, $provDesc);
+    providerErrorPage($provErr, $provDesc);
+}
+
+if ($authCode === '') {
+    renderPage('Something went wrong',
+        '<p class="err">Missing or malformed authorization response.</p>', $cfg);
+    exit;
+}
 
 $cache = new Cache($GLOBALS['CACHE_PATH'], $GLOBALS['CACHE_TTL']);
-if (!$cache->exists($app, $code)) {
+if (!$cache->exists($owner, $code)) {
     renderPage($cfg['title'],
         '<p class="err">Your activation code expired before sign-in finished. '
       . 'Get a fresh code on your device and try again.</p>', $cfg);
@@ -126,6 +162,13 @@ if (!$cache->exists($app, $code)) {
 // Exchange the authorization code for tokens — server-side, modern TLS.
 $oauth  = new OAuth2($cfg);
 $tokens = $oauth->exchangeCode($authCode, callbackUrl());
+
+if (is_array($tokens) && empty($tokens['access_token'])) {
+    fallBack($cfg, $owner, $code,
+        isset($tokens['error']) && is_string($tokens['error']) ? $tokens['error'] : '',
+        isset($tokens['error_description']) && is_string($tokens['error_description'])
+            ? $tokens['error_description'] : '');
+}
 
 if (!is_array($tokens) || empty($tokens['access_token'])) {
     dbg('Token exchange response: ' . json_encode($tokens));
@@ -139,12 +182,77 @@ if (!is_array($tokens) || empty($tokens['access_token'])) {
 // through (access_token, refresh_token, expires_in, token_type, …) minus our
 // internal marker; the device reads what it needs.
 unset($tokens['_http']);
-$cache->fulfill($app, $code, $tokens);
+if ($owner !== $app) {
+    // A fallback round: tell the device which app these tokens belong to, so
+    // it refreshes them through that app and knows what the account can do.
+    $tokens['broker_app'] = $app;
+}
+$cache->fulfill($owner, $code, $tokens);
 
 renderPage($cfg['title'],
     '<p class="ok">Access approved!</p>'
   . '<p>Return to your webOS device — it will finish signing in automatically. '
   . 'If it doesn\'t, press <b>Verify</b> in the app.</p>', $cfg);
+
+/**
+ * Some providers refuse an app's scope for some accounts only, and say so
+ * after the user has already signed in: Microsoft takes a personal account
+ * through its page with Exchange's scope and refuses it at the code exchange
+ * (AADSTS70011, invalid_scope). An app whose config names a fallback_app is
+ * then signed in with that app instead, in the same browser visit and against
+ * the same device code: the browser goes straight on to the fallback app's
+ * authorize URL (plus the first app's fallback_extra params), and the tokens
+ * are parked for the device's original code with broker_app naming the app
+ * they are for.
+ *
+ * Returns (to let the caller show the error) unless the fallback applies, in
+ * which case it redirects and exits. Only ever one round: the fallback app's
+ * own refusal is an error.
+ */
+function fallBack(array $cfg, $owner, $code, $err, $desc) {
+    if ($owner !== $cfg['name'] || empty($cfg['fallback_app'])) {
+        return;
+    }
+    $refused = ($err === 'invalid_scope');
+    if (!$refused && !empty($cfg['fallback_on']) && is_array($cfg['fallback_on'])) {
+        foreach ($cfg['fallback_on'] as $needle) {
+            if ($needle !== '' && strpos($desc, $needle) !== false) {
+                $refused = true;
+                break;
+            }
+        }
+    }
+    if (!$refused) {
+        return;
+    }
+    $fbName = preg_replace('/[^a-z0-9_-]/i', '', $cfg['fallback_app']);
+    $fbFile = $GLOBALS['APPS_PATH'] . '/' . $fbName . '/config.php';
+    if ($fbName === '' || !is_file($fbFile)) {
+        return;
+    }
+    $fbCfg = loadApp($fbName);
+    if ($fbCfg['flow'] !== 'oauth2_authcode') {
+        return;
+    }
+
+    $nonce = bin2hex(random_bytes(16));
+    $_SESSION['broker_nonce'][$owner . '_' . $code] = $nonce;
+    $state = base64url_encode(json_encode(array(
+        'app'   => $fbName,
+        'code'  => $code,
+        'nonce' => $nonce,
+        'for'   => $owner,
+    )));
+    $extra = (!empty($cfg['fallback_extra']) && is_array($cfg['fallback_extra']))
+           ? $cfg['fallback_extra'] : array();
+    $oauth = new OAuth2($fbCfg);
+    header('Location: ' . $oauth->authorizeUrl(callbackUrl(), $state, $extra));
+    exit;
+}
+
+function base64url_encode($s) {
+    return rtrim(strtr(base64_encode($s), '+/', '-_'), '=');
+}
 
 function base64url_decode($s) {
     $s = strtr($s, '-_', '+/');

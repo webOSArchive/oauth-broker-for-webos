@@ -140,6 +140,26 @@ OAuth1 provider is more lenient about this than it looks; test against the real 
 "no registration needed" into a config's comments. `apps/box/`, `apps/wumblr/`, and
 `apps/instapaper/` are worked examples of each flow to copy from.
 
+## Mail accounts: Google and Microsoft
+
+`apps/google`, `apps/microsoft` and `apps/microsoft365` sign mail accounts in for webOS CE and
+Lunacy, whose mail services (Palm's own, unchanged) then log in with the access token. Two
+optional config keys exist for them; any `oauth2_authcode` app can use either.
+
+- **`scope_on_token`** sends the app's `scope` again on the code exchange and on every refresh.
+  Microsoft wants it.
+- **`fallback_app`** names another app to sign the same person in with when the provider refuses
+  this app's scope for their account. Microsoft refuses the Exchange scope for personal accounts,
+  and says so only at the code exchange (`invalid_scope`, AADSTS70011), after the person has
+  signed in. `callback.php` then sends the browser on to the fallback app's authorize URL (plus
+  this app's `fallback_extra` params), and answers the device's original code with the fallback
+  app's tokens and `"broker_app": "<fallback app>"`. A device that sees `broker_app` refreshes
+  through that app (`/<broker_app>/refresh`). `fallback_on` lists strings that also count as a
+  refusal when found in the provider's `error_description`. There is one round only.
+
+The device gets the provider's token reply as it came, `id_token` included, so it can read the
+account's address from it.
+
 ## Security notes
 
 - Real configs (`apps/*/config.php`) and `config.php` are git-ignored — secrets never get
